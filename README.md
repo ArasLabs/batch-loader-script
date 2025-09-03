@@ -292,7 +292,6 @@ python .\batchloader.py --retry --templates-dir .\Templates
 * The script does **not** delete or rename `.failed` files
 * If your `.failed` files don't include a header row, make sure your CLI config uses `<first_row>1</first_row>` for the retry
 
-```
 
 ### Manual retry option
 
