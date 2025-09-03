@@ -269,15 +269,41 @@ python .\batchloader.py --dl-dir "C:\innovator\Release 35 CD Image\BatchLoader"
   `-> non-zero exit (<code>); check <logfile>`
 * **About `.failed` files:** BatchLoader typically writes a `<stem>.failed` file containing rows that did not load.
 
-  * **Current script behavior:** it **does not** automatically re-run `.failed` rows.
-  * **Manual retry option:** move/rename `*.failed` ➜ `*.txt` in a separate folder and re-run the script against that folder:
+### Fast retries
 
-    ```powershell
-    mkdir .\data_failed
-    copy .\logs\*.failed .\data_failed\
-    # rename files to *.txt as needed, then:
-    python .\batchloader.py --data-dir .\data_failed
-    ```
+If a run generates `.failed` row files (written to the data directory), you can re-run only those rows:
+
+```powershell
+# Looks in ./data for *.failed and replays them
+python .\batchloader.py --retry
+
+# If your .failed files are in a different location:
+python .\batchloader.py --retry --retry-dir .\some\other\folder
+
+# You can still provide a separate templates directory if you keep templates out of /data
+python .\batchloader.py --retry --templates-dir .\Templates
+```
+
+**Notes**
+
+* By default, looks for `.failed` files in your `--data-dir` (default: `./data`)
+* Templates are resolved as `Templates/<stem>.xml` or fallback `data/<stem>_Template.xml`
+* Logs are written to `./logs/retry/<stem>.retry.log`
+* The script does **not** delete or rename `.failed` files
+* If your `.failed` files don't include a header row, make sure your CLI config uses `<first_row>1</first_row>` for the retry
+
+```
+
+### Manual retry option
+
+Alternatively, you can move/rename `*.failed` ➜ `*.txt` in a separate folder and re-run the script against that folder:
+
+```powershell
+mkdir .\data_failed
+copy .\logs\*.failed .\data_failed\
+# rename files to *.txt as needed, then:
+python .\batchloader.py --data-dir .\data_failed
+```
 ---
 
 ## Usage examples

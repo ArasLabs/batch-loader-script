@@ -171,6 +171,19 @@ def main() -> None:
         help="Operation mode: add",
     )
     ap.add_argument("--logs-dir", type=Path, default=Path("./logs"))
+
+    ap.add_argument(
+        "--retry",
+        action="store_true",
+        help="Retry mode: process *.failed files (from --retry-dir or --data-dir) instead of normal data/*.txt files.",
+    )
+    ap.add_argument(
+        "--retry-dir",
+        type=Path,
+        default=None,
+        help="Directory to search for *.failed files (defaults to --data-dir).",
+    )
+
     ap.add_argument(
         "--init-config",
         action="store_true",
@@ -250,20 +263,56 @@ def main() -> None:
         else:
             sys.exit("ERROR: Windows EXE detected and no 'wine' found. Run on Windows/WSL or install wine.")
 
-    # Get all the data files in the data directory
-    data_files = sorted(args.data_dir.glob("*.txt"), key=lambda p: p.name.lower())
-    if not data_files:
-        sys.exit(f"ERROR: No *.txt files found in {args.data_dir}")
-
-    # Get the templates directory
-    templates_info = (str(args.templates_dir.resolve()) if args.templates_dir else "(next to data)")
-
+    # Header
     print(f"Runtime : {exe.parent}")
     print(f"Config  : {cli_cfg.resolve()}")
     print(f"Data    : {args.data_dir.resolve()}")
-    print(f"Templates: {templates_info}")
+    print(f"Templates: {(str(args.templates_dir.resolve()) if args.templates_dir else '(next to data)')}")
     print(f"Operation: {args.operation}")
-    print(f"Logs    : {args.logs_dir.resolve()}\n")
+    print(f"Logs    : {args.logs_dir.resolve()}")
+    print(f"Mode    : {'RETRY' if args.retry else 'NORMAL'}\n")
+
+    # ----- RETRY MODE -----
+    if args.retry:
+        failed_root = args.retry_dir or args.data_dir
+        if not failed_root.exists():
+            sys.exit(f"ERROR: retry dir not found: {failed_root}")
+        failed_files = sorted(failed_root.glob("*.failed"), key=lambda p: p.name.lower())
+        if not failed_files:
+            sys.exit(f"ERROR: --retry specified but no *.failed files found in {failed_root}")
+
+        retry_logs_dir = args.logs_dir / "retry"
+        retry_logs_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"Retrying {len(failed_files)} file(s) from: {failed_root.resolve()}\n")
+        for data in failed_files:
+            name = data.stem  # '001-User.failed' -> '001-User'
+            # Try templates_dir/<name>.xml, else fallback to data/<name>_Template.xml
+            template = find_template(data, args.templates_dir, args.operation)
+            if not template:
+                candidate = args.data_dir / f"{name}_Template.xml"
+                if candidate.exists():
+                    template = candidate
+            if not template:
+                print(f"[SKIP] {name}: missing template (Templates/{name}.xml or {name}_Template.xml)")
+                continue
+
+            log = retry_logs_dir / f"{name}.retry.log"
+            print(f"[RETRY] {name}")
+
+            rc = subprocess.run(
+                build_cmd(exe, cli_cfg, data, template, log, use_wine),
+                cwd=str(runtime_dir),
+            ).returncode
+            if rc != 0:
+                print(f"  -> non-zero exit ({rc}); check {log}")
+        print("\nDone.")
+        return
+
+    # ----- NORMAL MODE -----
+    data_files = sorted(args.data_dir.glob("*.txt"), key=lambda p: p.name.lower())
+    if not data_files:
+        sys.exit(f"ERROR: No *.txt files found in {args.data_dir}")
 
     # Process each data file
     for data in data_files:
