@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Minimal Aras BatchLoader driver (CLI-only config with no UI mixing)
-# Requires the Aras BatchLoader runtime folder; pass with --dl-dir or embed <loader_dir> in CLIBatchLoaderConfig.xml.
+# Requires the Aras BatchLoader runtime folder; pass with --bl-dir or embed <loader_dir> in CLIBatchLoaderConfig.xml.
 
 import argparse, platform, shutil, subprocess, sys
 from pathlib import Path
@@ -21,6 +21,7 @@ def find_template(data_file: Path, templates_dir: Path | None = None) -> Path | 
     else <data_dir>/<stem>_Template.xml."""
     name = data_file.stem
     candidates: list[Path] = []
+
     # Search order matters: central templates dir or within data directory
     if templates_dir is not None:
         candidates.append(templates_dir / f"{name}.xml")
@@ -36,13 +37,6 @@ def find_template(data_file: Path, templates_dir: Path | None = None) -> Path | 
 def make_delete_template(add_template: Path, dest_dir: Path) -> Path:
     """
     Create a 'delete' variant of an existing add-template.
-    Rules:
-      - Set outer <Item ... action="delete">
-      - For Part BOM: Use only the id attribute (@1 from data file)
-      - For Part: Keep <item_number>
-      - For unknown types, keep <id>, <item_number> if present (best-effort).
-
-    Returns: path to the generated delete template.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
     tree = ET.parse(str(add_template))
@@ -65,8 +59,8 @@ def make_delete_template(add_template: Path, dest_dir: Path) -> Path:
     elif item_type in {"part"}: # For Part we use where="item_number='@1'"
         for child in list(item_el):
             item_el.remove(child)
-        item_el.set("where", "item_number='@1'") # NOTE: '@1' must be the item_number column in your Part data file (see README).
-    else: # For other types, keep id and item_number if present (best-effort)
+        item_el.set("where", "item_number='@1'") # NOTE: '@1' must be the item_number column in Part data file (see README).
+    else: # For other types, keep id and item_number if present 
         keep_tags = {"id", "item_number", "keyed_name"} 
         for child in list(item_el):
             if child.tag not in keep_tags:
@@ -110,16 +104,16 @@ def build_cmd(
     template = template.resolve()
     log = log.resolve()
     bl_cfg = bl_cfg.resolve()
+    # Prefix command with 'wine' on non-Windows hosts so the EXE can run
     cmd = ["wine", str(exe)] if use_wine else [str(exe)] 
     return cmd + ["-d", str(data), "-c", str(bl_cfg), "-t", str(template), "-l", str(log)]
 
 
-def main() -> None:
-    """CLI entrypoint."""
+def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Minimal BatchLoader runner (separate CLI config).")
     ap.add_argument(
-        "--dl-dir",
-        dest="dl_dir",
+        "--bl-dir",
+        dest="bl_dir",
         type=Path,
         required=False,
         help="Folder that contains BatchLoaderCmd.exe and DLLs (runtime).",
@@ -138,7 +132,12 @@ def main() -> None:
         default=Path("./data"),
         help="Directory containing *.txt data files (default: ./data)",
     )
-    ap.add_argument("--templates-dir", type=Path, default=None)
+    ap.add_argument(
+        "--templates-dir",
+        type=Path,
+        default=None,
+        help="Directory containing XML templates; fallback is next to each data file.",
+    )
     ap.add_argument("--logs-dir", type=Path, default=Path("./logs"))
 
     ap.add_argument(
@@ -176,7 +175,7 @@ def main() -> None:
         action="store_true",
         help=(
             "Copy runtime BatchLoaderConfig.xml to local CLI config. "
-            "Requires --init-from-runtime and --dl-dir."
+            "Requires --init-from-runtime and --bl-dir."
         ),
     )
     ap.add_argument(
@@ -184,70 +183,81 @@ def main() -> None:
         action="store_true",
         help="Required with --init-config. Copies runtime's BatchLoaderConfig.xml.",
     )
-    args = ap.parse_args()
-    
-    # Handle --clean-failed flag
-    if args.clean_failed:
-        failed_files = list(args.data_dir.glob("*.failed"))
-        if not failed_files:
-            print(f"No .failed files found in {args.data_dir}")
-        else:
-            print(f"Found {len(failed_files)} .failed file(s) to remove:")
-            for f in failed_files:
-                print(f"  - {f.name}")
-                f.unlink()
-            print(f"\nRemoved {len(failed_files)} .failed file(s).")
-        return
+    return ap.parse_args()
 
+
+def handle_clean_failed(args: argparse.Namespace) -> bool:
+    # Handle --clean-failed flag
+    if not args.clean_failed: 
+        return False
+    failed_files = list(args.data_dir.glob("*.failed"))
+    if not failed_files:
+        print(f"No .failed files found in {args.data_dir}")
+    else:
+        print(f"Found {len(failed_files)} .failed file(s) to remove:")
+        for f in failed_files:
+            print(f"  - {f.name}")
+            f.unlink() # Remove the failed file
+        print(f"\nRemoved {len(failed_files)} .failed file(s).")
+    return True
+
+
+def resolve_cli_cfg(args: argparse.Namespace) -> Path:
     # Determine which config file to use
     if args.bl_config is not None:
-        cli_cfg = args.bl_config
+        return args.bl_config
     else:
-        cli_cfg = Path("./CLIBatchLoaderConfig.xml")
+        return Path("./CLIBatchLoaderConfig.xml")
 
+
+def run_init_config_if_requested(args: argparse.Namespace, cli_cfg: Path) -> bool:
     # Handle config initialization workflow
-    if args.init_config:
-        if not args.init_from_runtime:
-            sys.exit("ERROR: --init-config requires --init-from-runtime") 
-        if not args.dl_dir:
-            sys.exit("ERROR: --init-from-runtime requires --dl-dir to locate the runtime config")
-        
-        target = args.bl_config if args.bl_config is not None else Path("./CLIBatchLoaderConfig.xml")
+    if not args.init_config:
+        return False
 
-        # If the target is a directory, append the CLIBatchLoaderConfig.xml file
-        if target.exists() and target.is_dir():
-            target = target / "CLIBatchLoaderConfig.xml"
+    if not args.init_from_runtime:
+        sys.exit("ERROR: --init-config requires --init-from-runtime") 
+    if not args.bl_dir:
+        sys.exit("ERROR: --init-from-runtime requires --bl-dir to locate the runtime config")
+    
+    target = args.bl_config if args.bl_config is not None else Path("./CLIBatchLoaderConfig.xml")
 
-        # Ensure that the target directory exists
-        if not target.parent.exists():
-            target.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Copy runtime config and inject loader_dir path
-        runtime_cfg = args.dl_dir / "BatchLoaderConfig.xml"
-        require(runtime_cfg, "Runtime BatchLoaderConfig.xml")
+    # If the target is a directory, append the CLIBatchLoaderConfig.xml file
+    if target.exists() and target.is_dir():
+        target = target / "CLIBatchLoaderConfig.xml"
+
+    # Ensure that the target directory exists
+    if not target.parent.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Copy runtime config and inject loader_dir path
+    runtime_cfg = args.bl_dir / "BatchLoaderConfig.xml"
+    require(runtime_cfg, "Runtime BatchLoaderConfig.xml")
+    try:
+        xml_bytes = runtime_cfg.read_bytes()
+        target.write_bytes(xml_bytes)
         try:
-            xml_bytes = runtime_cfg.read_bytes()
-            target.write_bytes(xml_bytes)
-            try:
-                tree = ET.parse(str(target)) 
-                root = tree.getroot()
-                # Only add <loader_dir> if missing; do not overwrite an existing one.
-                if root.find("./loader_dir") is None:
-                    ET.SubElement(root, "loader_dir").text = str(args.dl_dir)
-                    tree.write(target, encoding="utf-8", xml_declaration=True)
-            except ET.ParseError:
-                pass
-        except Exception as e:
-            sys.exit(f"ERROR: failed to copy runtime config: {e}")
-        print(f"Initialized CLI config from runtime: {target.resolve()}") 
-        return
+            tree = ET.parse(str(target)) 
+            root = tree.getroot()
+            # Only add <loader_dir> if missing; do not overwrite an existing one.
+            if root.find("./loader_dir") is None:
+                ET.SubElement(root, "loader_dir").text = str(args.bl_dir)
+                tree.write(target, encoding="utf-8", xml_declaration=True)
+        except ET.ParseError:
+            pass
+    except Exception as e:
+        sys.exit(f"ERROR: failed to copy runtime config: {e}")
+    print(f"Initialized CLI config from runtime: {target.resolve()}") 
+    return True
 
+
+def setup_runtime_env(args: argparse.Namespace, cli_cfg: Path) -> tuple[Path, Path, bool]:
     # Validate paths and setup directories
     require(cli_cfg, "CLI config XML (e.g., CLIBatchLoaderConfig.xml)")
     
-    runtime_dir = args.dl_dir or read_loader_dir_from_config(cli_cfg)
+    runtime_dir = args.bl_dir or read_loader_dir_from_config(cli_cfg)
     if not runtime_dir:
-        sys.exit("ERROR: No runtime provided. Set --dl-dir or <loader_dir> in your CLI config")
+        sys.exit("ERROR: No runtime provided. Set --bl-dir or <loader_dir> in your CLI config")
     exe = runtime_dir / "BatchLoaderCmd.exe"
     require(exe, "BatchLoaderCmd.exe")
 
@@ -265,6 +275,10 @@ def main() -> None:
         else:
             sys.exit("ERROR: Windows EXE detected and no 'wine' found. Run on Windows/WSL or install wine.")
 
+    return exe, runtime_dir, use_wine
+
+
+def print_header(exe: Path, cli_cfg: Path, args: argparse.Namespace) -> None:
     # Header
     print(f"Runtime : {exe.parent}")
     print(f"Config  : {cli_cfg.resolve()}")
@@ -273,59 +287,70 @@ def main() -> None:
     print(f"Logs    : {args.logs_dir.resolve()}")
     print(f"Mode    : {'RETRY' if args.retry else ('DELETE' if args.delete else 'NORMAL')}\n")
 
-    # ----- RETRY MODE -----
-    if args.retry:
-        failed_root = args.retry_dir or args.data_dir
-        if not failed_root.exists():
-            sys.exit(f"ERROR: retry dir not found: {failed_root}")
-        failed_files = sorted(failed_root.glob("*.failed"), key=lambda p: p.name.lower())
-        if not failed_files:
-            sys.exit(f"ERROR: --retry specified but no *.failed files found in {failed_root}")
 
-        retry_logs_dir = args.logs_dir / "retry"
-        retry_logs_dir.mkdir(parents=True, exist_ok=True)
+def run_retry_mode(args: argparse.Namespace, exe: Path, cli_cfg: Path, runtime_dir: Path, use_wine: bool) -> None:
+    failed_root = args.retry_dir or args.data_dir
+    if not failed_root.exists():
+        sys.exit(f"ERROR: retry dir not found: {failed_root}")
+    failed_files = sorted(failed_root.glob("*.failed"), key=lambda p: p.name.lower())
+    if not failed_files:
+        sys.exit(f"ERROR: --retry specified but no *.failed files found in {failed_root}")
 
-        print(f"Retrying {len(failed_files)} file(s) from: {failed_root.resolve()}\n")
-        for data in failed_files:
-            # '001-User.failed' -> stem '001-User'; we re-use the original template name.
-            name = data.stem
-            # Try templates_dir/<name>.xml, else fallback to data/<name>_Template.xml
-            template = find_template(data, args.templates_dir)
-            if not template:
-                candidate = args.data_dir / f"{name}_Template.xml"
-                if candidate.exists():
-                    template = candidate
-            if not template:
-                print(f"[SKIP] {name}: missing template (Templates/{name}.xml or {name}_Template.xml)")
-                continue
+    retry_logs_dir = args.logs_dir / "retry"
+    retry_logs_dir.mkdir(parents=True, exist_ok=True)
 
-            log = retry_logs_dir / f"{name}.retry.log"
-            print(f"[RETRY] {name}")
+    print(f"Retrying {len(failed_files)} file(s) from: {failed_root.resolve()}\n")
+    for data in failed_files:
+        # '001-User.failed' -> stem '001-User'; we re-use the original template name
+        name = data.stem
+        # Retry uses the same template selection logic as normal mode
+        # Try templates_dir/<name>.xml, else fallback to data/<name>_Template.xml
+        template = find_template(data, args.templates_dir)
+        if not template:
+            candidate = args.data_dir / f"{name}_Template.xml" # Fallback to data/<name>_Template.xml
+            if candidate.exists():
+                template = candidate
+        if not template:
+            print(f"[SKIP] {name}: missing template (Templates/{name}.xml or {name}_Template.xml)") 
+            continue
 
-            # Run from runtime_dir so BatchLoaderCmd.exe can resolve its DLLs
-            rc = subprocess.run(
-                build_cmd(exe, cli_cfg, data, template, log, use_wine),
-                cwd=str(runtime_dir),
-            ).returncode
-            if rc != 0:
-                print(f"  -> non-zero exit ({rc}); check {log}")
-        print("\nDone.")
-        return
+        log = retry_logs_dir / f"{name}.retry.log"
+        print(f"[RETRY] {name}")
 
-    # ----- NORMAL MODE -----
+        # Run from runtime_dir so BatchLoaderCmd.exe can resolve its DLLs
+        rc = subprocess.run(
+            build_cmd(exe, cli_cfg, data, template, log, use_wine),
+            cwd=str(runtime_dir),
+        ).returncode
+        if rc != 0:
+            print(f"  -> non-zero exit ({rc}); check {log}")
+    print("\nDone.")
+
+
+def collect_data_files(args: argparse.Namespace) -> list[Path]:
     data_files = sorted(args.data_dir.glob("*.txt"), key=lambda p: p.name.lower())
     if not data_files:
         sys.exit(f"ERROR: No *.txt files found in {args.data_dir}")
-
     if args.delete:
         # Reverse order: high-prefixed files (BOMs) first, then base parts last
         data_files = list(reversed(data_files))
+    return data_files
+
+
+def process_normal_mode(
+    args: argparse.Namespace,
+    exe: Path,
+    cli_cfg: Path,
+    runtime_dir: Path,
+    use_wine: bool,
+) -> None:
+    data_files = collect_data_files(args)
 
     # Process each data file
     for data in data_files:
         name = data.stem
 
-        # Resolve the "add" template as the source (your existing logic)
+        # Resolve the "add" template as the source
         add_tpl = find_template(data, args.templates_dir)
         if not add_tpl:
             missing_hint = f"Templates/{name}.xml or {name}_Template.xml"
@@ -356,6 +381,35 @@ def main() -> None:
             print(f"  -> non-zero exit ({rc}); check {log}")
 
     print("\nDone.")
+
+
+def main() -> None:
+    """CLI entrypoint."""
+    args = parse_args()
+    
+    # Handle --clean-failed flag
+    if handle_clean_failed(args):
+        return
+
+    # Determine which config file to use
+    cli_cfg = resolve_cli_cfg(args)
+
+    # Handle config initialization workflow
+    if run_init_config_if_requested(args, cli_cfg):
+        return
+
+    exe, runtime_dir, use_wine = setup_runtime_env(args, cli_cfg)
+
+    # Header
+    print_header(exe, cli_cfg, args)
+
+    # ----- RETRY MODE -----
+    if args.retry:
+        run_retry_mode(args, exe, cli_cfg, runtime_dir, use_wine)
+        return
+
+    # ----- NORMAL MODE -----
+    process_normal_mode(args, exe, cli_cfg, runtime_dir, use_wine)
 
 
 if __name__ == "__main__":

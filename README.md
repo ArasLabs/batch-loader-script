@@ -41,7 +41,7 @@ C:\innovator\Release 35 CD Image\BatchLoader
 3) Initialize a CLI-only config (one-time)
 
 ```powershell
-python .\batchloader.py --init-config --init-from-runtime --dl-dir "C:\path\to\BatchLoader" --bl-config .\CLIBatchLoaderConfig.xml
+python .\batchloader.py --init-config --init-from-runtime --bl-dir "C:\path\to\BatchLoader" --bl-config .\CLIBatchLoaderConfig.xml
 ```
 
 4) Edit `CLIBatchLoaderConfig.xml`
@@ -67,7 +67,7 @@ python .\batchloader.py --delete
 python .\batchloader.py --clean-failed
 
 # Override runtime path at run time:
-python .\batchloader.py --dl-dir "C:\innovator\Release 35 CD Image\BatchLoader"
+python .\batchloader.py --bl-dir "C:\innovator\Release 35 CD Image\BatchLoader"
 ```
 
 Logs are written to `./logs` (one per data file).
@@ -76,7 +76,7 @@ See [Install / Setup (Detailed)](#install--setup-detailed) and [Data & Template 
 
 ### Flags at a glance
 
-- `--dl-dir`: Runtime folder with `BatchLoaderCmd.exe` and DLLs.
+- `--bl-dir`: Runtime folder with `BatchLoaderCmd.exe` and DLLs.
 - `--bl-config`: CLI config path (default `./CLIBatchLoaderConfig.xml`).
 - `--data-dir`: Data directory (default `./data`).
 - `--templates-dir`: Optional separate templates directory.
@@ -108,7 +108,7 @@ See all options: `python .\batchloader.py -h`.
 └─ logs/                           # Output logs (created on first run)
 ```
 
-> **Important:** Your **BatchLoader runtime folder** (with `BatchLoaderCmd.exe` and DLLs) may live *outside* this repo. You’ll point to it via `--dl-dir` or via `<loader_dir>` inside `CLIBatchLoaderConfig.xml`. DLLs must reside in the same folder as `BatchLoaderCmd.exe`.
+> **Important:** Your **BatchLoader runtime folder** (with `BatchLoaderCmd.exe` and DLLs) may live *outside* this repo. You’ll point to it via `--bl-dir` or via `<loader_dir>` inside `CLIBatchLoaderConfig.xml`. DLLs must reside in the same folder as `BatchLoaderCmd.exe`.
 
 ## What it does
 
@@ -175,10 +175,10 @@ Clone this repo (or copy `batchloader.py` + `CLIBatchLoaderConfig.xml` into a wo
 If you already have a working **runtime** `BatchLoaderConfig.xml` (used by the UI), you can clone it into a clean **CLI** config and inject the loader path:
 
 ```powershell
-python .\batchloader.py --init-config --init-from-runtime --dl-dir "C:\path\to\BatchLoader" --bl-config .\CLIBatchLoaderConfig.xml
+python .\batchloader.py --init-config --init-from-runtime --bl-dir "C:\path\to\BatchLoader" --bl-config .\CLIBatchLoaderConfig.xml
 ```
 
-This copies `BatchLoaderConfig.xml` from the runtime folder and adds a `<loader_dir>` element so future runs don’t need `--dl-dir`.
+This copies `BatchLoaderConfig.xml` from the runtime folder and adds a `<loader_dir>` element so future runs don’t need `--bl-dir`.
 
 ---
 
@@ -326,7 +326,7 @@ For a minimal first run on Windows, see Quick Start above.
 python .\batchloader.py
 
 # OR: override at runtime (if no <loader_dir> in the CLI config)
-python .\batchloader.py --dl-dir "C:\innovator\Release 35 CD Image\BatchLoader"
+python .\batchloader.py --bl-dir "C:\innovator\Release 35 CD Image\BatchLoader"
 ```
 
 <details>
@@ -336,17 +336,17 @@ Windows: primary/known-good target. Linux/macOS: should work via Wine (ensure `w
 
 - Install Wine (works with 7+); ensure `wine` is on PATH.
 - BatchLoader is a Windows .NET app; install .NET Framework in your Wine prefix (e.g., `winetricks dotnet48`). Wine‑Mono alone may not suffice.
-- Use `--dl-dir` to the BatchLoader runtime folder (with DLLs) accessible to Wine.
-- Prefer absolute paths for `--dl-dir` and run from a directory Wine can access.
+- Use `--bl-dir` to the BatchLoader runtime folder (with DLLs) accessible to Wine.
+- Prefer absolute paths for `--bl-dir` and run from a directory Wine can access.
 
 Example:
 
 ```bash
 # Load data
-python3 ./batchloader.py --dl-dir "/innovator/CDImage35Release/BatchLoader"
+python3 ./batchloader.py --bl-dir "/innovator/CDImage35Release/BatchLoader"
 
 # Delete data
-python3 ./batchloader.py --delete --dl-dir "/innovator/CDImage35Release/BatchLoader"
+python3 ./batchloader.py --delete --bl-dir "/innovator/CDImage35Release/BatchLoader"
 
 # Clean failed files
 python3 ./batchloader.py --clean-failed
