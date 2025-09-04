@@ -6,3 +6,9 @@ data/**
 !data/.gitkeep
 
 CLIBatchLoaderConfig.xml
+
+olddata/
+
+/templates_delete/
+
+__pycache__/
