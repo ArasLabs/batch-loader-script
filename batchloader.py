@@ -219,7 +219,7 @@ def run_init_config_if_requested(args: argparse.Namespace, cli_cfg: Path) -> boo
         sys.exit("ERROR: --init-config requires --init-from-runtime") 
     if not args.bl_dir:
         sys.exit("ERROR: --init-from-runtime requires --bl-dir to locate the runtime config")
-    
+
     target = args.bl_config if args.bl_config is not None else Path("./CLIBatchLoaderConfig.xml")
 
     # If the target is a directory, append the CLIBatchLoaderConfig.xml file
@@ -229,25 +229,60 @@ def run_init_config_if_requested(args: argparse.Namespace, cli_cfg: Path) -> boo
     # Ensure that the target directory exists
     if not target.parent.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Copy runtime config and inject loader_dir path
+
+    # Load runtime config, inject <loader_dir>, pretty-print, and write to target
     runtime_cfg = args.bl_dir / "BatchLoaderConfig.xml"
     require(runtime_cfg, "Runtime BatchLoaderConfig.xml")
+
+    def _indent(elem: ET.Element, level: int = 0, indent_char: str = "\t") -> None:
+        """In-place pretty printer: adds newlines and tab indentation."""
+        i = "\n" + (indent_char * level)
+        if len(elem):
+            if not elem.text or not elem.text.strip():
+                elem.text = i + indent_char
+            for child in elem:
+                _indent(child, level + 1, indent_char)
+                if not child.tail or not child.tail.strip():
+                    child.tail = i + indent_char
+            # Ensure the last child's tail brings us back to current level
+            if not elem[-1].tail or not elem[-1].tail.strip():
+                elem[-1].tail = i
+        else:
+            if not elem.text:
+                elem.text = ""
+            if level and (not elem.tail or not elem.tail.strip()):
+                elem.tail = i
+
     try:
-        xml_bytes = runtime_cfg.read_bytes()
-        target.write_bytes(xml_bytes)
+        tree = ET.parse(str(runtime_cfg))
+        root = tree.getroot()
+
+        # Only add <loader_dir> if missing; do not overwrite an existing one.
+        if root.find("./loader_dir") is None:
+
+            # Add the loader_dir comment, then the element itself
+            root.append(ET.Comment(
+                " Runtime folder used by the CLI script (absolute or relative to this file) "
+            ))
+            ET.SubElement(root, "loader_dir").text = str(args.bl_dir)
+
+        # Pretty print with tabs to match existing style
+        _indent(root, level=0, indent_char="\t")
+
+        # Write the file with XML declaration
+        tree.write(target, encoding="utf-8", xml_declaration=True)
+
+        # Ensure a trailing newline at EOF for cleanliness
         try:
-            tree = ET.parse(str(target)) 
-            root = tree.getroot()
-            # Only add <loader_dir> if missing; do not overwrite an existing one.
-            if root.find("./loader_dir") is None:
-                ET.SubElement(root, "loader_dir").text = str(args.bl_dir)
-                tree.write(target, encoding="utf-8", xml_declaration=True)
-        except ET.ParseError:
+            with target.open("ab") as f:
+                f.seek(0, 2)
+                f.write(b"\n")
+        except Exception:
             pass
     except Exception as e:
-        sys.exit(f"ERROR: failed to copy runtime config: {e}")
-    print(f"Initialized CLI config from runtime: {target.resolve()}") 
+        sys.exit(f"ERROR: failed to initialize CLI config: {e}")
+
+    print(f"Initialized CLI config from runtime: {target.resolve()}")
     return True
 
 
