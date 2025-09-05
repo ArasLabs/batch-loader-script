@@ -6,6 +6,9 @@ import argparse, platform, shutil, subprocess, sys
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+# Accepted column names for the GUID of the Item/Relationship to delete (case-insensitive)
+ID_ALIASES = {"id", "rel_id", "relationship_id"}
+
 
 def is_windows() -> bool:
     return platform.system().lower().startswith("win")
@@ -34,9 +37,43 @@ def find_template(data_file: Path, templates_dir: Path | None = None) -> Path | 
     return None
 
 
-def make_delete_template(add_template: Path, dest_dir: Path) -> Path:
+def _read_headers_for(data_file: Path) -> list[str]:
     """
-    Create a 'delete' variant of an existing add-template.
+    Read the first (header) line from a tab-delimited data file and return a list of header names.
+    Returns [] if the file cannot be read.
+    """
+    try:
+        with data_file.open("r", encoding="utf-8") as f:
+            first_line = f.readline().strip("\r\n")  # Read first line and remove line endings
+        
+        # Split by tabs to get raw header columns
+        raw_headers = first_line.split("\t")
+        
+        # Strip whitespace and filter out empty strings
+        headers = [header.strip() for header in raw_headers if header.strip()]
+        return headers
+    except Exception:
+        return []  # Return empty list if file can't be read
+
+def _find_id_col(headers: list[str]) -> int | None:
+    """
+    Return 1-based index of the ID column (matching any alias in ID_ALIASES, case-insensitive).
+    """
+    lower_headers = [h.lower() for h in headers]  # Normalize headers to lowercase for comparison
+    for idx, header in enumerate(lower_headers):
+        if header in ID_ALIASES:
+            return idx + 1  # Return 1-based index if header matches an alias
+    return None  # No matching header found
+
+def make_delete_template(
+    add_template: Path,
+    dest_dir: Path,
+    data_file: Path | None = None,
+    first_row: int | None = None,
+) -> Path:
+    """
+    Create a 'delete' variant of an existing add-template (ID-only deletes).
+    The data file's headers are used to locate the ID column (aliases accepted: id, rel_id, relationship_id).
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
     tree = ET.parse(str(add_template))
@@ -45,26 +82,51 @@ def make_delete_template(add_template: Path, dest_dir: Path) -> Path:
     # First AML Item node (BatchLoader templates typically have one)
     item_el = root.find(".//Item")
     if item_el is None:
-        sys.exit(f"ERROR: Could not find <Item> in template: {add_template}")
+        raise RuntimeError(f"Could not find <Item> in template: {add_template}")
 
-    # Flip action to delete
-    item_type = (item_el.get("type") or "").strip().lower()
+    # Determine if the template represents a relationship (e.g., has source_id/related_id)
+    # Do this before removing children so we can inspect structure.
+    rel_markers = {"source_id", "related_id"}
+    is_relationship = any(child.tag in rel_markers for child in list(item_el))
+
+    # Always perform delete by ID on the Item element itself
     item_el.set("action", "delete")
+    # Remove all children; delete keying lives on the Item element (id attribute)
+    for child in list(item_el):
+        item_el.remove(child)
 
-    if item_type in {"part bom", "part_bom", "partbom"}: # For Part BOM we use delete by ID
-        for child in list(item_el):
-            item_el.remove(child)
-        if not item_el.get("id"):
-            item_el.set("id", "@1")
-    elif item_type in {"part"}: # For Part we use where="item_number='@1'"
-        for child in list(item_el):
-            item_el.remove(child)
-        item_el.set("where", "item_number='@1'") # NOTE: '@1' must be the item_number column in Part data file (see README).
-    else: # For other types, keep id and item_number if present 
-        keep_tags = {"id", "item_number", "keyed_name"} 
-        for child in list(item_el):
-            if child.tag not in keep_tags:
-                item_el.remove(child)
+    # Decide header presence based solely on config: first_row > 1 means header row present
+    header_expected = (first_row is not None and first_row > 1)
+    if not header_expected:
+        # No headers (or unknown): treat first column as ID for all types
+        item_el.set("id", "@1")
+        out_path = dest_dir / add_template.name
+        tree.write(out_path, encoding="utf-8", xml_declaration=True)
+        return out_path
+
+    # Headers are expected; resolve by header names
+    headers = _read_headers_for(data_file) if data_file else []
+    id_idx = _find_id_col(headers) if headers else None
+    lower_headers = [h.lower() for h in headers] # Normalize the headers to lowercase for comparison
+    if id_idx is None: # If the ID column is not found
+        # Fallback for base Items (non-relationships): delete by item_number if present
+        # This is only for when the data file is not a relationship and the item_number header is present
+        if (not is_relationship) and ("item_number" in lower_headers): # If the template is not a relationship and the item_number header is present
+            item_num_idx = lower_headers.index("item_number") + 1 # Get the index of the item_number column
+            target_name = data_file.name if data_file else add_template.name
+            print(f"[WARN] {target_name}: no ID header; falling back to where=\"item_number='@{item_num_idx}'\" for Item")
+            item_el.set("where", f"item_number='@{item_num_idx}'") # Set the where clause to delete by item_number
+            out_path = dest_dir / add_template.name
+            tree.write(out_path, encoding="utf-8", xml_declaration=True) 
+            return out_path
+        # No ID and no applicable fallback
+        target_name = data_file.name if data_file else add_template.name
+        aliases = ", ".join(sorted(ID_ALIASES))
+        raise RuntimeError(
+            f"'{target_name}' has no ID column. Add a GUID column with one of the accepted headers: {aliases}"
+        )
+    else:
+        item_el.set("id", f"@{id_idx}")
 
     out_path = dest_dir / add_template.name
     tree.write(out_path, encoding="utf-8", xml_declaration=True) # Write the new delete template to the destination directory
@@ -90,6 +152,27 @@ def read_loader_dir_from_config(cfg_path: Path) -> Path | None:
     except ET.ParseError:
         return None
 
+
+def read_first_row_from_config(cfg_path: Path) -> int | None:
+    """
+    Reads the <first_row> value from the given XML config file and returns it as an int.
+    Returns None if the element is missing or invalid.
+    """
+    try:
+        tree = ET.parse(str(cfg_path))
+        root = tree.getroot()
+        elem = root.find("./first_row") # Find the <first_row> element directly under the root
+        if elem is None:
+            return None
+        value = (elem.text or "").strip() # Get the text value and strip whitespace
+        if not value:
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    except ET.ParseError:
+        return None            
 
 def build_cmd(
     exe: Path,
@@ -367,7 +450,7 @@ def collect_data_files(args: argparse.Namespace) -> list[Path]:
     if not data_files:
         sys.exit(f"ERROR: No *.txt files found in {args.data_dir}")
     if args.delete:
-        # Reverse order: high-prefixed files (BOMs) first, then base parts last
+        # Reverse order: high-prefixed files (BOMs) first, then base items last
         data_files = list(reversed(data_files))
     return data_files
 
@@ -378,6 +461,7 @@ def process_normal_mode(
     cli_cfg: Path,
     runtime_dir: Path,
     use_wine: bool,
+    first_row: int | None,
 ) -> None:
     data_files = collect_data_files(args)
 
@@ -397,7 +481,12 @@ def process_normal_mode(
         logs_dir = args.logs_dir
         if args.delete:
             try:
-                template = make_delete_template(add_tpl, args.delete_templates_dir)
+                template = make_delete_template(
+                    add_tpl,
+                    args.delete_templates_dir,
+                    data_file=data,
+                    first_row=first_row,
+                )
             except Exception as e:
                 print(f"[SKIP] {name}: could not build delete template: {e}")
                 continue
@@ -434,6 +523,8 @@ def main() -> None:
         return
 
     exe, runtime_dir, use_wine = setup_runtime_env(args, cli_cfg)
+    # Read first_row from CLI config to determine header presence for delete-template generation
+    first_row = read_first_row_from_config(cli_cfg)
 
     # Header
     print_header(exe, cli_cfg, args)
@@ -444,7 +535,7 @@ def main() -> None:
         return
 
     # ----- NORMAL MODE -----
-    process_normal_mode(args, exe, cli_cfg, runtime_dir, use_wine)
+    process_normal_mode(args, exe, cli_cfg, runtime_dir, use_wine, first_row)
 
 
 if __name__ == "__main__":

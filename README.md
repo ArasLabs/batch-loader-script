@@ -258,10 +258,39 @@ Retry mapping: For a `.failed` file named `001-Parts_TopAndAssemblies.failed`, t
 
 ### CSV/TSV format expectations
 
+#### Data file requirements
+
+* Files must match the `<delimiter>`, `<encoding>`, and `<first_row>` settings in `CLIBatchLoaderConfig.xml`.
+* With headers (`<first_row> > 1`):
+  - Include an **ID column** for delete mode:
+    - Accepted header names (case-insensitive): `id`, `rel_id`, `relationship_id`.
+    - The column may appear in any position.
+  - For add mode, templates only bind the columns they reference; additional columns (such as `id` for deletes) can remain unused by the add template.
+* Without headers (`<first_row> <= 1`):
+  - Column **1** is treated as the **ID** for delete mode.
+* Item datasets (e.g., Part, Document, User):
+  - Provide the Item’s **GUID** in the ID column for delete mode.
+  - When using the same file for add and delete, consider appending the ID column at the end so template indices used for add remain stable.
+* Relationship datasets (e.g., Part BOM, custom relationships):
+  - Provide the relationship row **GUID** in the ID column for delete mode.
+  - Header names `id`, `rel_id`, or `relationship_id` are accepted (case-insensitive).
+* Values in ID columns must be valid Innovator IDs for the target environment.
+* Template placeholders `@1`, `@2`, … map to column **positions** used for add mode; positions are unaffected by columns that templates do not reference.
+
+Example: using headers with an ID column at the end for an item dataset
+```
+item_number  name  description  major_rev  classification  unit  make_buy  cost  cost_basis  id
+```
+
 * File should match the **`<delimiter>`** and **`<encoding>`** in your config.
 * `first_row` controls header skipping (`2` means “skip header row”).
 * Template placeholders `@1`, `@2`, … map to the **column index** in your file.
   Example (`001-User_Template.xml`):
+
+* For `--delete`, the target row is identified by an **ID column**:
+  - With headers (`first_row > 1`): any column named `id`, `rel_id`, or `relationship_id` (case-insensitive) is used.
+  - Without headers (`first_row <= 1`): column 1 is treated as the ID.
+  - Items and relationships are both deleted by ID.
 
   ```xml
   <Item type="User" action="merge" id="@1">
@@ -273,9 +302,9 @@ Retry mapping: For a `.failed` file named `001-Parts_TopAndAssemblies.failed`, t
 
 ### Template & data structure
 
-- Main items (e.g., Part, Document, User): map `@1`, `@2`, … to columns in your data files. Commonly `@1` is the item key (`id` or `item_number`) depending on template design.
-  **Important for deletes:** For `Part` items, the generated delete template uses `where="item_number='@1'"`, so the **first** column in your Part TSV must be `item_number`.
-- Relationships (Part BOM): include a stable `rel_id` as the FIRST column in your data. This enables precise deletes and loads.
+- Main items (e.g., Part, Document, User): map `@1`, `@2`, … to columns in your data files. Template design determines which columns are referenced for adds.
+  For delete mode, include an **ID** column (Item GUID) somewhere in the file when using headers; if files are headerless, place the ID at column 1.
+- Relationships (e.g., Part BOM): include an **ID** column for each relationship row. Column names `id`, `rel_id`, or `relationship_id` are accepted (case-insensitive). With headers, the column can appear anywhere; without headers, place the ID at column 1.
 
 Example Part BOM data (TSV):
 
@@ -311,7 +340,7 @@ Example Part BOM template (add):
 ```
 
 Notes:
-- For deletes, the CLI generates a delete-template that deletes by `id` for Part BOM and by `item_number` for Parts.
+- For delete mode, the CLI generates a delete-template that deletes by **ID** for both items and relationships.
 
 </details>
 
@@ -404,7 +433,7 @@ python .\batchloader.py --retry --templates-dir .\templates
 The `--delete` flag provides a straight-forward way to remove what you just loaded:
 
 ```powershell
-# Delete everything in reverse order (BOMs first, then Parts)
+# Delete everything in reverse order (relationships first, then items)
 python .\batchloader.py --delete
 
 # Specify custom delete templates directory
@@ -412,11 +441,12 @@ python .\batchloader.py --delete --delete-templates-dir .\custom_delete_template
 ```
 
 How it works:
-- Processes files in reverse order (BOMs before Parts to respect dependencies).
+- Processes files in reverse order (relationships before items to respect dependencies).
 - Auto-generates delete templates based on your existing insert templates.
-- For Part BOM relationships: uses the custom `rel_id` from your data files for precise deletion.
-- For Parts: uses a `where="item_number='@1'"` clause. Ensure column 1 of your Part file is `item_number`.
+  - For relationships: uses the relationship ID from your data files (`id`, `rel_id`, or `relationship_id`).
+  - For items: uses the Item ID from your data files (`id`).
 - Logs all deletions to `./logs/delete/`.
+- Ensure data files satisfy the **Data file requirements** section so delete mode can identify rows by ID.
 
 Safety tip: Try `--delete` on a disposable environment first; deletes are irreversible.
 
