@@ -37,17 +37,18 @@ def find_template(data_file: Path, templates_dir: Path | None = None) -> Path | 
     return None
 
 
-def _read_headers_for(data_file: Path) -> list[str]:
+def _read_headers_for(data_file: Path, delimiter: str | None = None) -> list[str]:
     """
-    Read the first (header) line from a tab-delimited data file and return a list of header names.
+    Read the first (header) line from a delimited data file and return a list of header names.
     Returns [] if the file cannot be read.
     """
     try:
         with data_file.open("r", encoding="utf-8") as f:
             first_line = f.readline().strip("\r\n")  # Read first line and remove line endings
-        
-        # Split by tabs to get raw header columns
-        raw_headers = first_line.split("\t")
+        # Determine delimiter (default to tab)
+        sep = delimiter or "\t"
+        # Split by configured delimiter to get raw header columns
+        raw_headers = first_line.split(sep)
         
         # Strip whitespace and filter out empty strings
         headers = [header.strip() for header in raw_headers if header.strip()]
@@ -70,6 +71,7 @@ def make_delete_template(
     dest_dir: Path,
     data_file: Path | None = None,
     first_row: int | None = None,
+    delimiter: str | None = None,
 ) -> Path:
     """
     Create a 'delete' variant of an existing add-template (ID-only deletes).
@@ -83,11 +85,6 @@ def make_delete_template(
     item_el = root.find(".//Item")
     if item_el is None:
         raise RuntimeError(f"Could not find <Item> in template: {add_template}")
-
-    # Determine if the template represents a relationship (e.g., has source_id/related_id)
-    # Do this before removing children so we can inspect structure.
-    rel_markers = {"source_id", "related_id"}
-    is_relationship = any(child.tag in rel_markers for child in list(item_el))
 
     # Always perform delete by ID on the Item element itself
     item_el.set("action", "delete")
@@ -105,21 +102,9 @@ def make_delete_template(
         return out_path
 
     # Headers are expected; resolve by header names
-    headers = _read_headers_for(data_file) if data_file else []
+    headers = _read_headers_for(data_file, delimiter) if data_file else []
     id_idx = _find_id_col(headers) if headers else None
-    lower_headers = [h.lower() for h in headers] # Normalize the headers to lowercase for comparison
     if id_idx is None: # If the ID column is not found
-        # Fallback for base Items (non-relationships): delete by item_number if present
-        # This is only for when the data file is not a relationship and the item_number header is present
-        if (not is_relationship) and ("item_number" in lower_headers): # If the template is not a relationship and the item_number header is present
-            item_num_idx = lower_headers.index("item_number") + 1 # Get the index of the item_number column
-            target_name = data_file.name if data_file else add_template.name
-            print(f"[WARN] {target_name}: no ID header; falling back to where=\"item_number='@{item_num_idx}'\" for Item")
-            item_el.set("where", f"item_number='@{item_num_idx}'") # Set the where clause to delete by item_number
-            out_path = dest_dir / add_template.name
-            tree.write(out_path, encoding="utf-8", xml_declaration=True) 
-            return out_path
-        # No ID and no applicable fallback
         target_name = data_file.name if data_file else add_template.name
         aliases = ", ".join(sorted(ID_ALIASES))
         raise RuntimeError(
@@ -149,6 +134,45 @@ def read_loader_dir_from_config(cfg_path: Path) -> Path | None:
             # Resolve relative loader_dir against the config file's folder.
             p = (cfg_path.parent / p).resolve()
         return p
+    except ET.ParseError:
+        return None            
+
+def _normalize_delimiter_text(raw: str | None) -> str | None:
+    """Convert config <delimiter> text to an actual single-character delimiter.
+    Supports literal tab, "\\t", and common names ("tab", "comma", "pipe").
+    Defaults to tab when unrecognized or empty.
+    """
+    if raw is None:
+        return None
+    # Preserve a literal tab. do not strip() before checking
+    if raw == "\t":
+        return "\t"
+    # Common textual encodings
+    val = raw.strip()
+    if not val:
+        return "\t"
+    lower = val.lower()
+    if lower in {"\\t", "tab"}:
+        return "\t"
+    if lower in {",", "comma"}:
+        return ","
+    if lower in {"|", "pipe"}:
+        return "|"
+    # Single character custom delimiter
+    if len(val) == 1:
+        return val
+    # Fallback to tab
+    return "\t"
+
+def read_delimiter_from_config(cfg_path: Path) -> str | None:
+    """Read <delimiter> from XML config and normalize to a single character."""
+    try:
+        tree = ET.parse(str(cfg_path))
+        root = tree.getroot()
+        elem = root.find("./delimiter")
+        if elem is None:
+            return None
+        return _normalize_delimiter_text(elem.text)
     except ET.ParseError:
         return None
 
@@ -462,6 +486,7 @@ def process_normal_mode(
     runtime_dir: Path,
     use_wine: bool,
     first_row: int | None,
+    delimiter: str | None,
 ) -> None:
     data_files = collect_data_files(args)
 
@@ -486,6 +511,7 @@ def process_normal_mode(
                     args.delete_templates_dir,
                     data_file=data,
                     first_row=first_row,
+                    delimiter=delimiter,
                 )
             except Exception as e:
                 print(f"[SKIP] {name}: could not build delete template: {e}")
@@ -525,6 +551,8 @@ def main() -> None:
     exe, runtime_dir, use_wine = setup_runtime_env(args, cli_cfg)
     # Read first_row from CLI config to determine header presence for delete-template generation
     first_row = read_first_row_from_config(cli_cfg)
+    # Read delimiter from CLI config for header parsing in delete mode
+    delimiter = read_delimiter_from_config(cli_cfg)
 
     # Header
     print_header(exe, cli_cfg, args)
@@ -535,7 +563,7 @@ def main() -> None:
         return
 
     # ----- NORMAL MODE -----
-    process_normal_mode(args, exe, cli_cfg, runtime_dir, use_wine, first_row)
+    process_normal_mode(args, exe, cli_cfg, runtime_dir, use_wine, first_row, delimiter)
 
 
 if __name__ == "__main__":

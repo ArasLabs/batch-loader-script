@@ -1,30 +1,30 @@
 # Minimal Aras BatchLoader CLI
 
-CLI wrapper for Aras BatchLoader that separates CLI config from UI, resolves templates, orders loads, and writes per‑file logs.
+A small, scriptable wrapper around the Aras Batch Loader to run data loads from the command line and in automation.
 
-A scriptable wrapper around **Aras BatchLoaderCmd.exe** that lets you load delimited data files into an Aras Innovator database **without** mixing your CLI runs with the UI’s configuration. It discovers the matching AML template for each data file, runs the BatchLoader from the proper runtime folder (so DLLs are found), and writes a log per dataset.
+Subscribers receive the Batch Loader tool (GUI) and the `BatchLoaderCmd.exe` CLI utility as part of the Aras Innovator product. This repository is a sample script that wraps `BatchLoaderCmd.exe` to help automate repeatable, CLI‑first data loads and integrate them into pipelines. It is not a replacement for the product utilities.
 
 ## Overview
 
-Aras Innovator ships a Windows BatchLoader and a UI-driven tooling model. If you prefer a **CLI-only workflow**, this tool:
+This script makes Batch Loader easier to use in a CLI‑only workflow:
 
-* keeps **CLI connection settings separate** from the UI’s BatchLoader config,
-* supports running from **any folder** while pointing to the real BatchLoader runtime,
-* **orders uploads** so base items come **before** relationship rows
-
----
+- Keep CLI connection settings separate from the UI’s BatchLoader config.
+- Run from any folder while pointing to the BatchLoader runtime (DLLs resolve).
+- Discover matching AML templates for each data file automatically.
+- Process files in a predictable order so base items load before relationships.
+- Write a per‑file log for fast troubleshooting.
 
 ## Prerequisites
 
-* **Python 3.10+** (3.11+ recommended).
-* **Aras BatchLoader runtime folder** (the directory that contains `BatchLoaderCmd.exe` and its DLLs).
-* Make sure you can reach Innovator and have rights to load data.
+- Python 3.10+ (3.11+ recommended).
+- Access to the BatchLoader runtime folder (contains `BatchLoaderCmd.exe` and DLLs).
+- Network access and permissions to load data into your Innovator instance.
 
 ---
 
 ## Quick Start (Windows)
 
-1) Verify Python is installed and on PATH
+1) Verify Python is on PATH
 
 ```powershell
 python --version
@@ -32,155 +32,88 @@ python --version
 py --version
 ```
 
-2) Locate your BatchLoader runtime folder (contains `BatchLoaderCmd.exe`), e.g.:
-
+2) Copy the runtime config (one‑time)
+```powershell
+python .\batchloader.py --init-config --init-from-runtime --bl-dir "C:\\path\\to\\BatchLoader" --bl-config .\CLIBatchLoaderConfig.xml
 ```
-C:\innovator\Release 35 CD Image\BatchLoader
-```
 
-3) Initialize a CLI-only config (one-time)
+3) Edit the CLI config
+
+- Open `CLIBatchLoaderConfig.xml` and set `server`, `db`, `user`, `password`.
+- Ensure `<loader_dir>` points to the BatchLoader runtime folder. Adjust `delimiter` and `first_row` if needed.
+
+4) Run the loader
 
 ```powershell
-python .\batchloader.py --init-config --init-from-runtime --bl-dir "C:\path\to\BatchLoader" --bl-config .\CLIBatchLoaderConfig.xml
-```
-
-4) Edit `CLIBatchLoaderConfig.xml`
-
-- Set `server`, `db`, `user`, `password`, and verify `loader_dir` (auto-injected by step 3).
-
-5) Put data files and templates in `./data`
-
-- Example: `001-User.txt` and `001-User_Template.xml`.
-
-> Important: **Before you load**, back up your Innovator database (or use a disposable environment). This writes/deletes data. Check the logs after each run.
-
-6) Run the loader
-
-```powershell
-# Load all data
+# Using loader_dir embedded in CLIBatchLoaderConfig.xml
 python .\batchloader.py
 
-# Delete all data (reverse order)
-python .\batchloader.py --delete
-
-# Clean up failed files
-python .\batchloader.py --clean-failed
-
-# Override runtime path at run time:
-python .\batchloader.py --bl-dir "C:\innovator\Release 35 CD Image\BatchLoader"
+# OR override at runtime
+python .\batchloader.py --bl-dir "C:\\innovator\\Release 35 CD Image\\BatchLoader"
 ```
 
-Logs are written to `./logs` (one per data file).
+5) Review logs in `./logs`
 
-See [Install / Setup (Detailed)](#install--setup-detailed) and [Data & Template Conventions](#data--template-conventions) for more detailed install instructions.
-
-### Flags at a glance
-
-- `--bl-dir`: Runtime folder with `BatchLoaderCmd.exe` and DLLs.
-- `--bl-config`: CLI config path (default `./CLIBatchLoaderConfig.xml`).
-- `--data-dir`: Data directory (default `./data`).
-- `--templates-dir`: Optional separate templates directory.
-- `--logs-dir`: Where to write logs (default `./logs`; deletes -> `./logs/delete`, retries -> `./logs/retry`).
-- `--retry` [`--retry-dir`]: Replay `.failed` files.
-- `--delete` [`--delete-templates-dir`]: Reverse delete using generated templates.
-- `--clean-failed`: Remove all `.failed` files.
-- `--init-config --init-from-runtime`: Create a CLI config from the runtime.
-
-See all options: `python .\batchloader.py -h`.
+That’s it for a first run. For more details, see Install / Setup and Conventions.
 
 ---
 
-## Example repository layout
-
-```
-.
-├─ batchloader.py                  # The Python CLI wrapper
-├─ CLIBatchLoaderConfig.xml        # CLI-only config
-├─ data/
-│  ├─ 001-User.txt                 # Sample data files (tab-delimited)
-│  ├─ 001-User_Template.xml        # Matching AML templates
-│  ├─ 005-Variable.txt
-│  ├─ 005-Variable_Template.xml
-│  ├─ 018-Document.txt
-│  ├─ 018-Document_Template.xml
-│  ├─ 096-Customer.txt
-│  └─ 096-Customer_Template.xml
-└─ logs/                           # Output logs (created on first run)
-```
-
-> **Important:** Your **BatchLoader runtime folder** (with `BatchLoaderCmd.exe` and DLLs) may live *outside* this repo. You’ll point to it via `--bl-dir` or via `<loader_dir>` inside `CLIBatchLoaderConfig.xml`. DLLs must reside in the same folder as `BatchLoaderCmd.exe`.
-
-## What it does
-
-For every `*.txt` data file in your `--data-dir` (default: `./data`), the script:
-
-1. **Finds the matching template**
-
-   * Looks for `<stem>.xml` in `--templates-dir`, **or**
-   * `<stem>_Template.xml` **next to** the data file.
-2. **Runs** `BatchLoaderCmd.exe` **from the runtime folder** you specify (or that's embedded in the CLI config).
-3. **Writes a log** to `--logs-dir` (default: `./logs`).
-4. Skips files with missing templates with a clear `[SKIP]` message.
-
-**Sorts files case-insensitively by name**, so you can control load order with filename prefixes (e.g., `001-User.txt`, `018-Document.txt`, `200-PartBOM.txt`, etc.).
-
----
-
-## Install / Setup (Detailed)
-
-<details>
-<summary>Expand for full Windows setup</summary>
+## Install / Setup
 
 ### Step 0: Install Python (Windows)
 
-1. Download **Python 3.11+** from: [https://www.python.org/downloads/windows/](https://www.python.org/downloads/windows/)
-2. Run the installer and **check** “**Add python.exe to PATH**”.
-3. Open a new PowerShell window and verify:
+1) [Download Python 3.11+](https://www.python.org/downloads/windows/)
+2) Run the installer and check “Add python.exe to PATH”.
+3) Verify in a new PowerShell window:
 
-   ```powershell
-   python --version
-   # or, if your environment uses the launcher:
-   py --version
-   ```
-
-> **Dependencies / virtual env**
-> This project uses only the Python **standard library**. No `pip` installs are required.
-> A virtual environment is **optional**:
->
-> ```powershell
-> python -m venv .venv
-> .\.venv\Scripts\Activate.ps1
-> ```
-
----
-
-### Step 1: Get/locate the BatchLoader runtime
-
-Obtain the **BatchLoader runtime folder** that contains `BatchLoaderCmd.exe` **and all DLLs** (typically shipped with Aras Innovator). Note its full path, e.g.:
-
-```
-C:\innovator\Release 35 CD Image\BatchLoader
+```powershell
+python --version
+# or
+py --version
 ```
 
----
+Dependencies: this project uses only the Python standard library (no pip installs). A virtual environment is optional:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+### Step 1: Locate the BatchLoader runtime
+
+Obtain the BatchLoader runtime folder that contains `BatchLoaderCmd.exe` and all DLLs (shipped with Aras Innovator). Note its path, for example:
+
+```
+C:\\innovator\\Release 35 CD Image\\BatchLoader
+```
 
 ### Step 2: Get the project files
 
-Clone this repo (or copy `batchloader.py` + `CLIBatchLoaderConfig.xml` into a working folder). From that folder, you can initialize and run the loader.
+Clone this repo (or copy `batchloader.py` + `CLIBatchLoaderConfig.xml` into a working folder). The repo includes sample data in `./data`.
 
----
+Example layout:
+
+```
+.
+├─ batchloader.py                  # Python CLI wrapper
+├─ CLIBatchLoaderConfig.xml        # CLI-only config
+├─ data/                           # Sample data + templates
+└─ logs/                           # Created on first run
+```
+
+Important: Your BatchLoader runtime folder may live outside this repo. Point to it via `--bl-dir` or `<loader_dir>` inside `CLIBatchLoaderConfig.xml`. DLLs must be in the same folder as `BatchLoaderCmd.exe`.
 
 ### Step 3: Create a CLI config from the runtime (recommended)
 
-If you already have a working **runtime** `BatchLoaderConfig.xml` (used by the UI), you can clone it into a clean **CLI** config and inject the loader path:
+If you already have a working runtime `BatchLoaderConfig.xml` (used by the UI), clone it into a clean CLI config and inject the loader path:
 
 ```powershell
-python .\batchloader.py --init-config --init-from-runtime --bl-dir "C:\path\to\BatchLoader" --bl-config .\CLIBatchLoaderConfig.xml
+python .\batchloader.py --init-config --init-from-runtime --bl-dir "C:\\path\\to\\BatchLoader" --bl-config .\CLIBatchLoaderConfig.xml
 ```
 
 This copies `BatchLoaderConfig.xml` from the runtime folder and adds a `<loader_dir>` element so future runs don’t need `--bl-dir`.
 
----
+After copying, open `CLIBatchLoaderConfig.xml` and edit the connection settings (`server`, `db`, `user`, `password`). The script reads connection info from this file and runs will fail without valid values.
 
 ### Step 4: Fill in connection and loader settings
 
@@ -188,187 +121,39 @@ Open `CLIBatchLoaderConfig.xml` and set values:
 
 ```xml
 <BatchLoaderConfig>
-  <server>https://YOUR-INNOVATOR-URL</server> 
-  <db>YOUR_DATABASE_NAME</db>                                  
-  <user>admin</user>                                            
-  <password>innovatorpassword123</password>     
-
+  <server>https://YOUR-INNOVATOR-URL</server>
+  <db>YOUR_DATABASE_NAME</db>
+  <user>admin</user>
+  <password>innovatorpassword123</password>
   <max_processes>1</max_processes>
   <threads>1</threads>
   <lines_per_process>250</lines_per_process>
-
-  <delimiter>\t</delimiter>                                   
+  <delimiter>\t</delimiter>
   <encoding>utf-8</encoding>
-  <first_row>2</first_row>                                      
-
+  <first_row>2</first_row>
   <log_level>3</log_level>
-
-  <!-- Absolute or relative path to the BatchLoader runtime folder -->
   <loader_dir>..\..\..\BatchLoader</loader_dir>
-</BatchLoaderConfig>
+ </BatchLoaderConfig>
 ```
 
-**Where to find these values (fill in for your org):**
+Guidance:
 
-*"Session" option from user's top-right dropdown in Innovator is a good place to start*
+- `server`: your Innovator site URL (without the trailing `/Server`).
+- `db`: the SQL Server database name for your environment.
+- `user/password`: an Innovator account with permissions to load data.
+- `first_row`: 2 if files include a header row; 1 if not.
+- `delimiter`: `\t`, `,`, or `|` to match your file format.
+- `loader_dir`: folder that contains `BatchLoaderCmd.exe` and DLLs.
 
-* **server** – your Innovator site URL (IIS binding or internal environment map), **without** the `/Server` path at the end. For example, use `https://your-innovator-host` (not `https://your-innovator-host/Server`).
-* **db** – the SQL Server database name for your Innovator environment.
-* **user/password** – an Innovator account with permissions to load data.
-* **first\_row** – `2` if your files include a header row; `1` if they do not.
-* **delimiter** – choose `\t`, `,`, or `|` to match your file format.
-* **loader\_dir** – the folder that contains `BatchLoaderCmd.exe` and its DLLs.
+### Non‑Windows (Linux/macOS) via Wine
 
-Security note: This file contains credentials. Use least‑privileged accounts and avoid committing real passwords. Commit sanitized examples instead.
+Windows is the primary and most tested target. Linux/macOS can work via Wine:
 
-</details>
+- Install Wine; ensure `wine` is on PATH.
+- BatchLoader is a Windows .NET app. Install the .NET Framework in Wine. Wine‑Mono alone may not suffice.
+- Use `--bl-dir` pointing to the BatchLoader runtime folder accessible to Wine; prefer absolute paths.
 
-## Data & Template Conventions
-
-<details>
-<summary>Expand for conventions, ordering, and formats</summary>
-
-### Ordering of loads
-
-* Files are processed in **case-insensitive, lexicographic order**.
-  Ex: `001-User.txt` ➜ `005-Variable.txt` ➜ `018-Document.txt` ➜ `096-Customer.txt`.
-* Put **base “main items” first** (e.g., `User`, `Document`, `Part`, `Customer`).
-* Put **relationship rows after** both sides exist (e.g., `Part Document` relations).
-
-  * Example names: `200-PartDocumentRelationship.txt`, `200-PartDocumentRelationship_Template.xml`.
-
-*This avoids foreign-key or key-lookup failures during relationship inserts.*
-
-### Data and template file organization
-
-By default, place all your data files (`*.txt`) and their corresponding templates (`*_Template.xml`) together in the `/data` directory. This is the standard and simplest setup.
-
-If you want to keep templates in a separate location, you can specify a template directory using the `--templates-dir` option when running the script. The script will still expect your data files in the data directory you provide (default is `/data`), but will look for templates in the template directory if specified.
-
-#### How templates are found
-
-For each data file `<data-dir>/NNN-Name.txt` (where `NNN-Name` is the stem), the script searches for the template as follows:
-
-1. If `--templates-dir` is specified: looks for `<templates-dir>/NNN-Name.xml`
-2. Otherwise (or if not found): looks for `<data-dir>/NNN-Name_Template.xml` (next to the data file)
-
-If no template is found, the file is **skipped** and `[SKIP]` is printed.
-
-Retry mapping: For a `.failed` file named `001-Parts_TopAndAssemblies.failed`, the script looks for the template `001-Parts_TopAndAssemblies.xml` (in `--templates-dir`) or `001-Parts_TopAndAssemblies_Template.xml` (next to the data).
-
-### CSV/TSV format expectations
-
-#### Data file requirements
-
-* Files must match the `<delimiter>`, `<encoding>`, and `<first_row>` settings in `CLIBatchLoaderConfig.xml`.
-* With headers (`<first_row> > 1`):
-  - Include an **ID column** for delete mode:
-    - Accepted header names (case-insensitive): `id`, `rel_id`, `relationship_id`.
-    - The column may appear in any position.
-  - For add mode, templates only bind the columns they reference; additional columns (such as `id` for deletes) can remain unused by the add template.
-* Without headers (`<first_row> <= 1`):
-  - Column **1** is treated as the **ID** for delete mode.
-* Item datasets (e.g., Part, Document, User):
-  - Provide the Item’s **GUID** in the ID column for delete mode.
-  - When using the same file for add and delete, consider appending the ID column at the end so template indices used for add remain stable.
-* Relationship datasets (e.g., Part BOM, custom relationships):
-  - Provide the relationship row **GUID** in the ID column for delete mode.
-  - Header names `id`, `rel_id`, or `relationship_id` are accepted (case-insensitive).
-* Values in ID columns must be valid Innovator IDs for the target environment.
-* Template placeholders `@1`, `@2`, … map to column **positions** used for add mode; positions are unaffected by columns that templates do not reference.
-
-Example: using headers with an ID column at the end for an item dataset
-```
-item_number  name  description  major_rev  classification  unit  make_buy  cost  cost_basis  id
-```
-
-* File should match the **`<delimiter>`** and **`<encoding>`** in your config.
-* `first_row` controls header skipping (`2` means “skip header row”).
-* Template placeholders `@1`, `@2`, … map to the **column index** in your file.
-  Example (`001-User_Template.xml`):
-
-* For `--delete`, the target row is identified by an **ID column**:
-  - With headers (`first_row > 1`): any column named `id`, `rel_id`, or `relationship_id` (case-insensitive) is used.
-  - Without headers (`first_row <= 1`): column 1 is treated as the ID.
-  - Items and relationships are both deleted by ID.
-
-  ```xml
-  <Item type="User" action="merge" id="@1">
-    <last_name>@2</last_name>
-    <first_name>@3</first_name>
-    <!-- ... -->
-  </Item>
-  ```
-
-### Template & data structure
-
-- Main items (e.g., Part, Document, User): map `@1`, `@2`, … to columns in your data files. Template design determines which columns are referenced for adds.
-  For delete mode, include an **ID** column (Item GUID) somewhere in the file when using headers; if files are headerless, place the ID at column 1.
-- Relationships (e.g., Part BOM): include an **ID** column for each relationship row. Column names `id`, `rel_id`, or `relationship_id` are accepted (case-insensitive). With headers, the column can appear anywhere; without headers, place the ID at column 1.
-
-Example Part BOM data (TSV):
-
-| rel_id                           | source_item_number  | related_item_number | quantity | sort_order | reference_designator |
-|----------------------------------|---------------------|---------------------|----------|------------|----------------------|
-| 8EA46F18376246F891DDBADB9B9AEFCD | FRONT-WHEEL-700C    | HUB-FR-100QR        | 1        | 10         |                      |
-| 9118A3A222BA451382CD26E0FF0B9B92 | FRONT-WHEEL-700C    | RIM-700C-24H        | 1        | 20         |                      |
-| F96C5749C70544DF84F183D9A5BEF02F | FRONT-WHEEL-700C    | SPOKE-272           | 24       | 30         |                      |
-| 5FD53E12231A4C238D22620E13BEB7AE | FRONT-WHEEL-700C    | NIPPLE-14G          | 24       | 40         |                      |
-
-Reference designators may be blank if not used.
-
-Example Part BOM template (add):
-
-```xml
-<AML>
-  <Item type="Part BOM" action="add" id="@1">
-    <source_id>
-      <Item type="Part" action="get" select="id">
-        <item_number>@2</item_number>
-      </Item>
-    </source_id>
-    <related_id>
-      <Item type="Part" action="get" select="id">
-        <item_number>@3</item_number>
-      </Item>
-    </related_id>
-    <quantity>@4</quantity>
-    <sort_order>@5</sort_order>
-    <reference_designator>@6</reference_designator>
-  </Item>
-</AML>
-```
-
-Notes:
-- For delete mode, the CLI generates a delete-template that deletes by **ID** for both items and relationships.
-
-</details>
-
-## Usage
-
-### Windows
-
-For a minimal first run on Windows, see Quick Start above.
-
-```powershell 
-# Using loader_dir embedded in CLIBatchLoaderConfig.xml
-python .\batchloader.py
-
-# OR: override at runtime (if no <loader_dir> in the CLI config)
-python .\batchloader.py --bl-dir "C:\innovator\Release 35 CD Image\BatchLoader"
-```
-
-<details>
-<summary>Non‑Windows (Linux/macOS) via Wine</summary>
-
-Windows: primary/known-good target. Linux/macOS: should work via Wine (ensure `wine` is on PATH and .NET 4.8 is installed in the Wine prefix, e.g., `winetricks dotnet48`).
-
-- Install Wine (works with 7+); ensure `wine` is on PATH.
-- BatchLoader is a Windows .NET app; install .NET Framework in your Wine prefix (e.g., `winetricks dotnet48`). Wine‑Mono alone may not suffice.
-- Use `--bl-dir` to the BatchLoader runtime folder (with DLLs) accessible to Wine.
-- Prefer absolute paths for `--bl-dir` and run from a directory Wine can access.
-
-Example:
+Examples:
 
 ```bash
 # Load data
@@ -381,22 +166,51 @@ python3 ./batchloader.py --delete --bl-dir "/innovator/CDImage35Release/BatchLoa
 python3 ./batchloader.py --clean-failed
 ```
 
-</details>
+---
+
+## Conventions
+
+Data formatting and ordering are critical for correct results.
+
+See [CONVENTIONS.md](CONVENTIONS.md) for data and template organization, load order, and CSV/TSV format expectations.
 
 ---
 
-## Logs, Exit Codes, and Retries
+## Usage
 
-* Each run writes a **per-file log** into `--logs-dir`, e.g., `logs/001-User.log`.
-* If `BatchLoaderCmd.exe` returns non-zero, the script prints:
-  `-> non-zero exit (<code>); check <logfile>`
-*  BatchLoader writes a `<stem>.failed` file containing rows that did not load.
+### Flags
 
-### Fast retries
+- `--bl-dir`: Runtime folder with `BatchLoaderCmd.exe` and DLLs.
+- `--bl-config`: CLI config path (default `./CLIBatchLoaderConfig.xml`).
+- `--data-dir`: Data directory (default `./data`).
+- `--templates-dir`: Optional separate templates directory.
+- `--logs-dir`: Where to write logs (default `./logs`; deletes → `./logs/delete`, retries → `./logs/retry`).
+- `--retry` [`--retry-dir`]: Replay `.failed` files.
+- `--delete` [`--delete-templates-dir`]: Reverse delete using generated templates (default delete-templates dir: `./templates_delete`).
+- `--clean-failed`: Remove all `.failed` files.
+- `--init-config --init-from-runtime`: Create a CLI config from the runtime.
 
-If a run generates `.failed` row files, they’ll be written to your data directory using the data file’s stem (no `.txt`).
-Example:
-`data\001-Parts_TopAndAssemblies.txt` ➜ `data\001-Parts_TopAndAssemblies.failed`
+See all options: `python .\batchloader.py -h`.
+
+### Basic commands (Windows)
+
+```powershell
+# Using loader_dir embedded in CLIBatchLoaderConfig.xml
+python .\batchloader.py
+
+# OR override at runtime (if <loader_dir> is not set)
+python .\batchloader.py --bl-dir "C:\\innovator\\Release 35 CD Image\\BatchLoader"
+```
+
+### Logs, exit codes, and retries
+
+- Each run writes a per‑file log into `--logs-dir`, e.g., `logs/001-User.log`.
+- If `BatchLoaderCmd.exe` returns non‑zero, the script prints: `-> non-zero exit (<code>); check <logfile>`.
+- BatchLoader writes a `<stem>.failed` file containing rows that did not load.
+
+Fast retries
+
+If a run generates `.failed` row files, they’re written alongside your data using the data file’s stem (no `.txt`). Example: `data\001-Parts_TopAndAssemblies.failed`.
 
 ```powershell
 # Looks in ./data for *.failed and replays them
@@ -405,32 +219,20 @@ python .\batchloader.py --retry
 # If your .failed files are in a different location:
 python .\batchloader.py --retry --retry-dir .\some\other\folder
 
-# You can still provide a separate templates directory if you keep templates out of /data
+# Provide a separate templates directory if templates aren’t in /data
 python .\batchloader.py --retry --templates-dir .\templates
 ```
 
-**Notes**
+Notes
 
-- Looks for files ending in `.failed` in `--retry-dir` (if provided) or `--data-dir` (default: `./data`).
-- `.failed` filenames match the original data file’s stem (no `.txt`). Example mapping:
-  - Data file: `001-Parts_TopAndAssemblies.txt`
-  - Retry file: `001-Parts_TopAndAssemblies.failed`
-- Template resolution during retries:
-  - `--templates-dir/001-Parts_TopAndAssemblies.xml`, else
-  - `data/001-Parts_TopAndAssemblies_Template.xml`.
+- Searches for `.failed` in `--retry-dir` (if provided) or `--data-dir` (default: `./data`).
+- Retry file name matches the original data file’s stem.
+- Template resolution during retries: `--templates-dir/<stem>.xml`, else `data/<stem>_Template.xml`.
 - Logs go to `./logs/retry/<stem>.retry.log` (e.g., `logs/retry/001-Parts_TopAndAssemblies.retry.log`).
 
+### Delete mode
 
-
-**Run with default locations (data in `./data`, logs to `./logs`):** See the Windows section under [Usage](#usage).
-
-**Run from macOS/Linux with Wine:** See the macOS/Linux section under [Usage](#usage).
-
----
-
-## Delete Mode
-
-The `--delete` flag provides a straight-forward way to remove what you just loaded:
+The `--delete` flag provides a straightforward way to remove what you just loaded:
 
 ```powershell
 # Delete everything in reverse order (relationships first, then items)
@@ -440,19 +242,22 @@ python .\batchloader.py --delete
 python .\batchloader.py --delete --delete-templates-dir .\custom_delete_templates
 ```
 
-How it works:
+How it works
+
 - Processes files in reverse order (relationships before items to respect dependencies).
-- Auto-generates delete templates based on your existing insert templates.
+- Auto‑generates delete templates based on your existing insert templates.
   - For relationships: uses the relationship ID from your data files (`id`, `rel_id`, or `relationship_id`).
   - For items: uses the Item ID from your data files (`id`).
 - Logs all deletions to `./logs/delete/`.
-- Ensure data files satisfy the **Data file requirements** section so delete mode can identify rows by ID.
+- Generated delete templates are written to `./templates_delete` by default (override with `--delete-templates-dir`).
+- Ensure data files satisfy the ID column requirements in `CONVENTIONS.md` so delete mode can identify rows by ID.
 
-Safety tip: Try `--delete` on a disposable environment first; deletes are irreversible.
+Required ID column for deletes
 
- 
+- Items: include an `id` column with the Item’s GUID. With headers, the column can be anywhere; without headers, place the GUID in column 1.
+- Relationships: include a relationship row GUID column named `id`, `rel_id`, or `relationship_id` (case-insensitive). With headers, the column can be anywhere; without headers, place the GUID in column 1.
 
-## Clean Failed Files
+### Clean Failed Files
 
 Remove all `*.failed` files from your data directory:
 
