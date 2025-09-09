@@ -46,7 +46,10 @@ Retry mapping: For a `.failed` file named `001-Parts_TopAndAssemblies.failed`, t
     - The column may appear in any position — the CLI locates it by name and maps the correct column index for the generated delete template.
   - For add mode, templates only bind the columns they reference; additional columns (such as `id` for deletes) can remain unused by the add template.
 - Without headers (`<first_row> <= 1`):
-  - Column 1 is treated as the ID for delete mode.
+  - **Column 1 is treated as the ID for delete mode.**
+  - This means headerless delete files **must** put the GUID in column 1.
+
+
 - Item datasets (e.g., Part, Document, User):
   - Provide the Item’s GUID in the `id` column for delete mode (recommended header name: `id`).
   - When using the same file for add and delete, consider appending the ID column at the end so template indices used for add remain stable.

@@ -5,12 +5,106 @@
 import argparse, platform, shutil, subprocess, sys
 from pathlib import Path
 import xml.etree.ElementTree as ET
-
 # Accepted column names for the GUID of the Item/Relationship to delete (case-insensitive)
 ID_ALIASES = {"id", "rel_id", "relationship_id"}
 
+# Defaults and XML field order used when generating a clean CLI config
+DEFAULT_CLI_CFG_NAME = "CLIBatchLoaderConfig.xml"
+CLI_CFG_ORDER = [
+    "server",
+    "db",
+    "user",
+    "password",
+    "max_processes",
+    "delimiter",
+    "threads",
+    "encoding",
+    "lines_per_process",
+    "first_row",
+    "log_level",
+    "log_file",
+]
 
+
+#region XML Helpers
+def _xml_indent(elem: ET.Element, level: int = 0, indent_char: str = "\t") -> None:
+    """Pretty print: add newlines and indentation in-place (tabs by default)."""
+    i = "\n" + (indent_char * level)
+    if len(elem): 
+        if not elem.text or not elem.text.strip(): # If the element has no text or the text is empty, add the indentation
+            elem.text = i + indent_char
+        for child in elem: # For each child of the element, add the indentation
+            _xml_indent(child, level + 1, indent_char)
+            if not child.tail or not child.tail.strip(): # If the child has no tail or the tail is empty, add the indentation
+                child.tail = i + indent_char
+        if not elem[-1].tail or not elem[-1].tail.strip(): # If the last child of the element has no tail or the tail is empty, add the indentation
+            elem[-1].tail = i
+    else:
+        if not elem.text: # If the element has no text, add an empty string
+            elem.text = ""
+        if level and (not elem.tail or not elem.tail.strip()): # If the element has no tail or the tail is empty, add the indentation
+            elem.tail = i
+
+
+def _pick_first_text(root: ET.Element, tag: str) -> str:
+    """First non-empty text for a tag. Then first. Then the empty string."""
+    elems = root.findall(f"./{tag}")
+    if not elems: 
+        return "" 
+    for el in elems: # For each element, get the text and strip whitespace
+        txt = (el.text or "").strip()
+        if txt: # If the text is not empty, return it
+            return txt
+    return (elems[0].text or "").strip() # If no non-empty text is found, return the first element's text and strip whitespace
+
+
+def _resolve_init_target_path(bl_config_arg: Path | None) -> Path:
+    """Resolve the target CLI config path. If an existing directory is passed, append default name. This is the path to the new CLI config file that will be created."""
+    target = bl_config_arg if bl_config_arg is not None else Path(f"./{DEFAULT_CLI_CFG_NAME}")
+    if target.exists() and target.is_dir():
+        target = target / DEFAULT_CLI_CFG_NAME
+    return target
+
+
+def _build_cli_config_from_runtime(runtime_cfg: Path, loader_dir: Path) -> ET.Element:
+    """Create a new minimal CLI config element from the runtime config and loader_dir."""
+    src_tree = ET.parse(str(runtime_cfg)) 
+    src_root = src_tree.getroot() 
+
+    new_root = ET.Element("BatchLoaderConfig") # Root for new CLI config
+    for tag in CLI_CFG_ORDER:
+        ET.SubElement(new_root, tag).text = _pick_first_text(src_root, tag)
+
+    new_root.append(ET.Comment(
+        " Runtime folder used by the CLI script (absolute or relative to this file) "
+    ))
+    ET.SubElement(new_root, "loader_dir").text = str(loader_dir)
+
+    return new_root
+
+
+def _write_xml_pretty(root: ET.Element, target: Path, indent_char: str = "\t") -> None:
+    """Write XML to target with pretty indentation and a trailing newline."""
+    # Ensure parent directory exists
+    if not target.parent.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+    _xml_indent(root, level=0, indent_char=indent_char) 
+    ET.ElementTree(root).write(target, encoding="utf-8", xml_declaration=True, short_empty_elements=False)
+
+    # Ensure trailing newline at EOF
+    try:
+        with target.open("ab") as f:  # Open file in append binary mode
+            f.seek(0, 2)  # Seek to end of file
+            f.write(b"\n")
+    except Exception:
+        pass
+#endregion
+
+
+#region Core Helpers
 def is_windows() -> bool:
+    """Check if the platform is Windows."""
     return platform.system().lower().startswith("win")
 
 def require(p: Path, what: str) -> None:
@@ -41,6 +135,10 @@ def _read_headers_for(data_file: Path, delimiter: str | None = None) -> list[str
     """
     Read the first (header) line from a delimited data file and return a list of header names.
     Returns [] if the file cannot be read.
+
+    Note: This helper is only used when the CLI config indicates headers
+    (i.e., <first_row> > 1). For headerless files (<first_row> <= 1) we never
+    call this; deletes bind id to column 1 without inspecting headers.
     """
     try:
         with data_file.open("r", encoding="utf-8") as f:
@@ -57,14 +155,13 @@ def _read_headers_for(data_file: Path, delimiter: str | None = None) -> list[str
         return []  # Return empty list if file can't be read
 
 def _find_id_col(headers: list[str]) -> int | None:
-    """
-    Return 1-based index of the ID column (matching any alias in ID_ALIASES, case-insensitive).
-    """
-    lower_headers = [h.lower() for h in headers]  # Normalize headers to lowercase for comparison
+    """Return 1-based index of the ID column (matching any alias in ID_ALIASES, case-insensitive)."""
+    lower_headers = [h.lower() for h in headers]
     for idx, header in enumerate(lower_headers):
         if header in ID_ALIASES:
-            return idx + 1  # Return 1-based index if header matches an alias
-    return None  # No matching header found
+            return idx + 1
+    return None
+
 
 def make_delete_template(
     add_template: Path,
@@ -75,7 +172,16 @@ def make_delete_template(
 ) -> Path:
     """
     Create a 'delete' variant of an existing add-template (ID-only deletes).
-    The data file's headers are used to locate the ID column (aliases accepted: id, rel_id, relationship_id).
+
+    Headerless files are fully supported:
+      - If <first_row> <= 1 (no header row), we DO NOT read the data file.
+        We bind the delete key as id="@1" (column 1 is assumed to be the GUID).
+      - If <first_row> > 1 (headers present), we read the header row from
+        the data file and locate the GUID column by alias:
+        {id, rel_id, relationship_id}. We then bind id="@<index>".
+
+    This function never deletes by business keys (e.g., item_number). Deletes
+    are always by GUID, either base Item id or relationship id.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
     tree = ET.parse(str(add_template))
@@ -92,29 +198,43 @@ def make_delete_template(
     for child in list(item_el):
         item_el.remove(child)
 
-    # Decide header presence based solely on config: first_row > 1 means header row present
-    header_expected = (first_row is not None and first_row > 1)
+    # Decide header presence strictly from config:
+    #   first_row > 1  ⇒ a header row exists in the data file
+    #   first_row <= 1 ⇒ headerless data (we do not inspect the file)
+    header_expected = (first_row or 1) > 1
     if not header_expected:
-        # No headers (or unknown): treat first column as ID for all types
+        # Headerless mode: GUID must be in column 1 for all types (base/relationship)
         item_el.set("id", "@1")
+        if data_file:
+            print(f"[WARN] No headers expected (<first_row>={first_row or 1}); "
+                  f"assuming column 1 is the GUID in {data_file.name}")
         out_path = dest_dir / add_template.name
-        tree.write(out_path, encoding="utf-8", xml_declaration=True)
+        _write_xml_pretty(root, out_path, indent_char="\t")
         return out_path
 
-    # Headers are expected; resolve by header names
-    headers = _read_headers_for(data_file, delimiter) if data_file else []
-    id_idx = _find_id_col(headers) if headers else None
-    if id_idx is None: # If the ID column is not found
-        target_name = data_file.name if data_file else add_template.name
+    # Headers are expected in this branch. We need to read them to locate the GUID column
+    if not data_file:
+        raise RuntimeError(
+            "Delete-template generation expects a data file when <first_row> indicates "
+            "a header row (> 1) so the GUID column can be discovered by header alias."
+        )
+    headers = _read_headers_for(data_file, delimiter)
+    if not headers:
+        raise RuntimeError(
+            f"Could not read header row from '{data_file.name}'. "
+            "Verify <first_row> in your CLI config and the file encoding."
+        )
+    id_idx = _find_id_col(headers)
+    if id_idx is None:
         aliases = ", ".join(sorted(ID_ALIASES))
         raise RuntimeError(
-            f"'{target_name}' has no ID column. Add a GUID column with one of the accepted headers: {aliases}"
+            f"'{data_file.name}' has no ID column. Add a GUID column with one of: {aliases}"
         )
-    else:
-        item_el.set("id", f"@{id_idx}")
+
+    item_el.set("id", f"@{id_idx}")
 
     out_path = dest_dir / add_template.name
-    tree.write(out_path, encoding="utf-8", xml_declaration=True) # Write the new delete template to the destination directory
+    _write_xml_pretty(root, out_path, indent_char="\t") # Write the new delete template to the destination directory
     return out_path
 
 
@@ -165,7 +285,7 @@ def _normalize_delimiter_text(raw: str | None) -> str | None:
     return "\t"
 
 def read_delimiter_from_config(cfg_path: Path) -> str | None:
-    """Read <delimiter> from XML config and normalize to a single character."""
+    """Read <delimiter> from XML config and normalize to a single character. Used for header parsing in delete mode."""
     try:
         tree = ET.parse(str(cfg_path))
         root = tree.getroot()
@@ -214,8 +334,10 @@ def build_cmd(
     # Prefix command with 'wine' on non-Windows hosts so the EXE can run
     cmd = ["wine", str(exe)] if use_wine else [str(exe)] 
     return cmd + ["-d", str(data), "-c", str(bl_cfg), "-t", str(template), "-l", str(log)]
+#endregion
 
 
+#region CLI & Execution
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Minimal BatchLoader runner (separate CLI config).")
     ap.add_argument(
@@ -292,7 +414,6 @@ def parse_args() -> argparse.Namespace:
     )
     return ap.parse_args()
 
-
 def handle_clean_failed(args: argparse.Namespace) -> bool:
     # Handle --clean-failed flag
     if not args.clean_failed: 
@@ -310,91 +431,39 @@ def handle_clean_failed(args: argparse.Namespace) -> bool:
 
 
 def resolve_cli_cfg(args: argparse.Namespace) -> Path:
-    # Determine which config file to use
+    """Determine which config file to use"""
     if args.bl_config is not None:
         return args.bl_config
     else:
         return Path("./CLIBatchLoaderConfig.xml")
 
-
 def run_init_config_if_requested(args: argparse.Namespace, cli_cfg: Path) -> bool:
-    # Handle config initialization workflow
+    """Initialize a clean CLI config from the runtime config when requested."""
     if not args.init_config:
         return False
 
     if not args.init_from_runtime:
-        sys.exit("ERROR: --init-config requires --init-from-runtime") 
+        sys.exit("ERROR: --init-config requires --init-from-runtime")
     if not args.bl_dir:
         sys.exit("ERROR: --init-from-runtime requires --bl-dir to locate the runtime config")
 
-    target = args.bl_config if args.bl_config is not None else Path("./CLIBatchLoaderConfig.xml")
+    target = _resolve_init_target_path(args.bl_config)
 
-    # If the target is a directory, append the CLIBatchLoaderConfig.xml file
-    if target.exists() and target.is_dir():
-        target = target / "CLIBatchLoaderConfig.xml"
-
-    # Ensure that the target directory exists
-    if not target.parent.exists():
-        target.parent.mkdir(parents=True, exist_ok=True)
-
-    # Load runtime config, inject <loader_dir>, pretty-print, and write to target
     runtime_cfg = args.bl_dir / "BatchLoaderConfig.xml"
     require(runtime_cfg, "Runtime BatchLoaderConfig.xml")
 
-    def _indent(elem: ET.Element, level: int = 0, indent_char: str = "\t") -> None:
-        """In-place pretty printer: adds newlines and tab indentation."""
-        i = "\n" + (indent_char * level)
-        if len(elem):
-            if not elem.text or not elem.text.strip():
-                elem.text = i + indent_char
-            for child in elem:
-                _indent(child, level + 1, indent_char)
-                if not child.tail or not child.tail.strip():
-                    child.tail = i + indent_char
-            # Ensure the last child's tail brings us back to current level
-            if not elem[-1].tail or not elem[-1].tail.strip():
-                elem[-1].tail = i
-        else:
-            if not elem.text:
-                elem.text = ""
-            if level and (not elem.tail or not elem.tail.strip()):
-                elem.tail = i
-
     try:
-        tree = ET.parse(str(runtime_cfg))
-        root = tree.getroot()
-
-        # Only add <loader_dir> if missing; do not overwrite an existing one.
-        if root.find("./loader_dir") is None:
-
-            # Add the loader_dir comment, then the element itself
-            root.append(ET.Comment(
-                " Runtime folder used by the CLI script (absolute or relative to this file) "
-            ))
-            ET.SubElement(root, "loader_dir").text = str(args.bl_dir)
-
-        # Pretty print with tabs to match existing style
-        _indent(root, level=0, indent_char="\t")
-
-        # Write the file with XML declaration
-        tree.write(target, encoding="utf-8", xml_declaration=True)
-
-        # Ensure a trailing newline at EOF for cleanliness
-        try:
-            with target.open("ab") as f:
-                f.seek(0, 2)
-                f.write(b"\n")
-        except Exception:
-            pass
+        new_root = _build_cli_config_from_runtime(runtime_cfg, args.bl_dir)
+        _write_xml_pretty(new_root, target, indent_char="\t")
     except Exception as e:
         sys.exit(f"ERROR: failed to initialize CLI config: {e}")
 
-    print(f"Initialized CLI config from runtime: {target.resolve()}")
+    print(f"Initialized clean CLI config from runtime: {target.resolve()}")
     return True
 
 
 def setup_runtime_env(args: argparse.Namespace, cli_cfg: Path) -> tuple[Path, Path, bool]:
-    # Validate paths and setup directories
+    """Validate paths and setup directories"""
     require(cli_cfg, "CLI config XML (e.g., CLIBatchLoaderConfig.xml)")
     
     runtime_dir = args.bl_dir or read_loader_dir_from_config(cli_cfg)
@@ -421,7 +490,6 @@ def setup_runtime_env(args: argparse.Namespace, cli_cfg: Path) -> tuple[Path, Pa
 
 
 def print_header(exe: Path, cli_cfg: Path, args: argparse.Namespace) -> None:
-    # Header
     print(f"Runtime : {exe.parent}")
     print(f"Config  : {cli_cfg.resolve()}")
     print(f"Data    : {args.data_dir.resolve()}")
@@ -470,6 +538,7 @@ def run_retry_mode(args: argparse.Namespace, exe: Path, cli_cfg: Path, runtime_d
 
 
 def collect_data_files(args: argparse.Namespace) -> list[Path]:
+    """Collect all *.txt files in the data directory"""
     data_files = sorted(args.data_dir.glob("*.txt"), key=lambda p: p.name.lower())
     if not data_files:
         sys.exit(f"ERROR: No *.txt files found in {args.data_dir}")
@@ -518,6 +587,8 @@ def process_normal_mode(
                 continue
             logs_dir = args.logs_dir / "delete"
             logs_dir.mkdir(parents=True, exist_ok=True)
+
+        
 
         log = logs_dir / f"{name}.log"
         print(f"[{'DELETE' if args.delete else 'LOAD'}] {name}")
@@ -568,3 +639,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+#endregion

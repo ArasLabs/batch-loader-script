@@ -142,6 +142,8 @@ Guidance:
 - `db`: the SQL Server database name for your environment.
 - `user/password`: an Innovator account with permissions to load data.
 - `first_row`: 2 if files include a header row; 1 if not.
+  - **Headerless rule:** when `first_row = 1`, **column 1 must be the GUID**
+    used for deletes (`id` for items; `rel_id/relationship_id/id` for relationships).
 - `delimiter`: `\t`, `,`, or `|` to match your file format.
 - `loader_dir`: folder that contains `BatchLoaderCmd.exe` and DLLs.
 
