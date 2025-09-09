@@ -1,0 +1,16 @@
+<AML>
+  <Item type="Part BOM" action="add" id="@1">
+    <source_id>
+      <Item type="Part" action="get">
+        <item_number>@2</item_number>
+      </Item>
+    </source_id>
+    <related_id>
+      <Item type="Part" action="get">
+        <item_number>@3</item_number>
+      </Item>
+    </related_id>
+    <quantity>@4</quantity>
+    <sort_order>@5</sort_order>
+  </Item>
+</AML>

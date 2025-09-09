@@ -1,0 +1,6 @@
+<AML>
+  <Item type="Document" action="add" id="@3">
+    <item_number>@1</item_number>
+    <name>@2</name>
+  </Item>
+</AML>

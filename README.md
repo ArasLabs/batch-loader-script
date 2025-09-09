@@ -143,7 +143,7 @@ Guidance:
 - `user/password`: an Innovator account with permissions to load data.
 - `first_row`: 2 if files include a header row; 1 if not.
   - **Headerless rule:** when `first_row = 1`, **column 1 must be the GUID**
-    used for deletes (`id` for items; `rel_id/relationship_id/id` for relationships).
+    used for deletes (required header name with headers: `id`).
 - `delimiter`: `\t`, `,`, or `|` to match your file format.
 - `loader_dir`: folder that contains `BatchLoaderCmd.exe` and DLLs.
 
@@ -248,7 +248,7 @@ How it works
 
 - Processes files in reverse order (relationships before items to respect dependencies).
 - Auto‑generates delete templates based on your existing insert templates.
-  - For relationships: uses the relationship ID from your data files (`id`, `rel_id`, or `relationship_id`).
+  - For relationships: uses the relationship ID from your data files (`id`).
   - For items: uses the Item ID from your data files (`id`).
 - Logs all deletions to `./logs/delete/`.
 - Generated delete templates are written to `./templates_delete` by default (override with `--delete-templates-dir`).
@@ -257,7 +257,7 @@ How it works
 Required ID column for deletes
 
 - Items: include an `id` column with the Item’s GUID. With headers, the column can be anywhere; without headers, place the GUID in column 1.
-- Relationships: include a relationship row GUID column named `id`, `rel_id`, or `relationship_id` (case-insensitive). With headers, the column can be anywhere; without headers, place the GUID in column 1.
+- Relationships: include an `id` column with the relationship row GUID. With headers, the column can be anywhere; without headers, place the GUID in column 1.
 
 ### Clean Failed Files
 

@@ -2,8 +2,6 @@
 BatchLoader/
 logs/
 
-data/** 
-!data/.gitkeep
 
 CLIBatchLoaderConfig.xml
 

@@ -42,7 +42,7 @@ Retry mapping: For a `.failed` file named `001-Parts_TopAndAssemblies.failed`, t
 - Files must match the `<delimiter>`, `<encoding>`, and `<first_row>` settings in `CLIBatchLoaderConfig.xml`.
 - With headers (`<first_row> > 1`):
   - Include an ID column for delete mode:
-    - Accepted header names (case-insensitive): `id`, `rel_id`, `relationship_id`.
+    - Required header name (case-insensitive): `id`.
     - The column may appear in any position — the CLI locates it by name and maps the correct column index for the generated delete template.
   - For add mode, templates only bind the columns they reference; additional columns (such as `id` for deletes) can remain unused by the add template.
 - Without headers (`<first_row> <= 1`):
@@ -54,8 +54,7 @@ Retry mapping: For a `.failed` file named `001-Parts_TopAndAssemblies.failed`, t
   - Provide the Item’s GUID in the `id` column for delete mode (recommended header name: `id`).
   - When using the same file for add and delete, consider appending the ID column at the end so template indices used for add remain stable.
 - Relationship datasets (e.g., Part BOM, custom relationships):
-  - Provide the relationship row GUID in the ID column for delete mode.
-  - Recommended header name: `rel_id` (alternatively `relationship_id` or `id`).
+  - Provide the relationship row GUID in the `id` column for delete mode.
 - Values in ID columns must be valid Innovator IDs for the target environment.
 - Template placeholders `@1`, `@2`, … map to column positions used for add mode; positions are unaffected by columns that templates do not reference.
 
@@ -82,18 +81,18 @@ Example (`001-User_Template.xml`):
 ## Mandatory ID Column for Deletes
 
 - Items: include an `id` column with the Item’s GUID. With headers, the column can be anywhere; without headers, place the GUID in column 1.
-- Relationships: include a relationship row GUID column named `id`, `rel_id`, or `relationship_id` (case-insensitive). With headers, the column can be anywhere; without headers, place the GUID in column 1.
+- Relationships: include an `id` column with the relationship row GUID. With headers, the column can be anywhere; without headers, place the GUID in column 1.
 - The CLI reads `<first_row>` and `<delimiter>` from `CLIBatchLoaderConfig.xml` to find the ID column when generating delete templates.
 
 
 ## Template & Data Structure
 
 - Main items (e.g., Part, Document, User): map `@1`, `@2`, … to columns in your data files. Template design determines which columns are referenced for adds. For delete mode, include an ID column (Item GUID) somewhere in the file when using headers; if files are headerless, place the ID at column 1.
-- Relationships (e.g., Part BOM): include an ID column for each relationship row. Column names `id`, `rel_id`, or `relationship_id` are accepted (case-insensitive). With headers, the column can appear anywhere; without headers, place the ID at column 1.
+- Relationships (e.g., Part BOM): include an ID column for each relationship row named `id` (case-insensitive). With headers, the column can appear anywhere; without headers, place the ID at column 1.
 
 Example Part BOM data (TSV):
 
-| rel_id                           | source_item_number  | related_item_number | quantity | sort_order | reference_designator |
+| id                               | source_item_number  | related_item_number | quantity | sort_order | reference_designator |
 |----------------------------------|---------------------|---------------------|----------|------------|----------------------|
 | 8EA46F18376246F891DDBADB9B9AEFCD | FRONT-WHEEL-700C    | HUB-FR-100QR        | 1        | 10         |                      |
 | 9118A3A222BA451382CD26E0FF0B9B92 | FRONT-WHEEL-700C    | RIM-700C-24H        | 1        | 20         |                      |

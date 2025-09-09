@@ -1,0 +1,9 @@
+<AML>
+  <Item type="Part" action="add" id="@6">
+    <item_number>@1</item_number>
+    <name>@2</name>
+    <classification>@3</classification>
+    <make_buy>@4</make_buy>
+    <cost>@5</cost>
+  </Item>
+</AML>

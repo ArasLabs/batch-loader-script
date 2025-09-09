@@ -5,8 +5,8 @@
 import argparse, platform, shutil, subprocess, sys
 from pathlib import Path
 import xml.etree.ElementTree as ET
-# Accepted column names for the GUID of the Item/Relationship to delete (case-insensitive)
-ID_ALIASES = {"id", "rel_id", "relationship_id"}
+# Required header name for the GUID of the Item/Relationship to delete (case-insensitive)
+REQUIRED_ID_NAME = "id"
 
 # Defaults and XML field order used when generating a clean CLI config
 DEFAULT_CLI_CFG_NAME = "CLIBatchLoaderConfig.xml"
@@ -155,10 +155,10 @@ def _read_headers_for(data_file: Path, delimiter: str | None = None) -> list[str
         return []  # Return empty list if file can't be read
 
 def _find_id_col(headers: list[str]) -> int | None:
-    """Return 1-based index of the ID column (matching any alias in ID_ALIASES, case-insensitive)."""
+    """Return 1-based index of the required 'id' column (case-insensitive)."""
     lower_headers = [h.lower() for h in headers]
     for idx, header in enumerate(lower_headers):
-        if header in ID_ALIASES:
+        if header == REQUIRED_ID_NAME:
             return idx + 1
     return None
 
@@ -177,8 +177,8 @@ def make_delete_template(
       - If <first_row> <= 1 (no header row), we DO NOT read the data file.
         We bind the delete key as id="@1" (column 1 is assumed to be the GUID).
       - If <first_row> > 1 (headers present), we read the header row from
-        the data file and locate the GUID column by alias:
-        {id, rel_id, relationship_id}. We then bind id="@<index>".
+        the data file and locate the GUID column by the required 'id' header.
+        We then bind id="@<index>".
 
     This function never deletes by business keys (e.g., item_number). Deletes
     are always by GUID, either base Item id or relationship id.
@@ -216,7 +216,7 @@ def make_delete_template(
     if not data_file:
         raise RuntimeError(
             "Delete-template generation expects a data file when <first_row> indicates "
-            "a header row (> 1) so the GUID column can be discovered by header alias."
+            "a header row (> 1) so the GUID column can be discovered via the 'id' header."
         )
     headers = _read_headers_for(data_file, delimiter)
     if not headers:
@@ -226,9 +226,8 @@ def make_delete_template(
         )
     id_idx = _find_id_col(headers)
     if id_idx is None:
-        aliases = ", ".join(sorted(ID_ALIASES))
         raise RuntimeError(
-            f"'{data_file.name}' has no ID column. Add a GUID column with one of: {aliases}"
+            f"'{data_file.name}' must include an 'id' column containing the GUID for the item/relationship to delete."
         )
 
     item_el.set("id", f"@{id_idx}")
